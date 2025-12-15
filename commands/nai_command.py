@@ -32,6 +32,17 @@ class NaiControlCommand(BaseCommand):
 
         logger.info(f"[NaiCommand] 执行命令: {content}, session_id={session_id}")
 
+        # 权限检查
+        from .admin_command import SceneAdminCommand
+        message_info = self.message.message_info
+        platform = getattr(message_info, "platform", "")
+        group_info = getattr(message_info, "group_info", None)
+        chat_id = group_info.group_id if group_info and getattr(group_info, "group_id", None) else user_id
+
+        if not SceneAdminCommand.check_user_permission(platform, chat_id, user_id, self.get_config):
+            await self.send_text("❌ 当前会话已开启管理员模式，仅管理员可使用")
+            return False, "没有权限", 2
+
         # 解析子命令
         if "on" in content:
             return await self._handle_nai_on(session_id)

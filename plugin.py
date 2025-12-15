@@ -75,6 +75,11 @@ class SceneFormatPlugin(BasePlugin):
                 type=int,
                 default=10,
                 description="Reply模型使用的历史上下文条数（场景生成用）"
+            ),
+            "appearance_description": ConfigField(
+                type=str,
+                default="",
+                description="NAI生图外貌提示词（直接使用，不翻译）"
             )
         },
         "admin": {

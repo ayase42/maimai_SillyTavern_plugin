@@ -37,6 +37,17 @@ class CustomInitCommand(BaseCommand):
         user_id = str(self.message.message_info.user_info.user_id)
         session_id = self._build_session_id(stream_id, user_id)
 
+        # 权限检查
+        from .admin_command import SceneAdminCommand
+        message_info = self.message.message_info
+        platform = getattr(message_info, "platform", "")
+        group_info = getattr(message_info, "group_info", None)
+        chat_id = group_info.group_id if group_info and getattr(group_info, "group_id", None) else user_id
+
+        if not SceneAdminCommand.check_user_permission(platform, chat_id, user_id, self.get_config):
+            await self.send_text("❌ 当前会话已开启管理员模式，仅管理员可使用")
+            return False, "没有权限", 2
+
         description = self.matched_groups.get("description", "").strip()
 
         if not description:

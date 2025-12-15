@@ -779,11 +779,26 @@ class SceneDB:
         cursor = conn.cursor()
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("""
-            UPDATE scene_states
-            SET nai_enabled = ?, updated_at = ?
-            WHERE chat_id = ?
-        """, (1 if enabled else 0, now, chat_id))
+
+        # 先检查记录是否存在
+        cursor.execute("SELECT chat_id FROM scene_states WHERE chat_id = ?", (chat_id,))
+        exists = cursor.fetchone() is not None
+
+        if exists:
+            # 记录存在，更新
+            cursor.execute("""
+                UPDATE scene_states
+                SET nai_enabled = ?, updated_at = ?
+                WHERE chat_id = ?
+            """, (1 if enabled else 0, now, chat_id))
+        else:
+            # 记录不存在，创建一个最小化的场景状态记录（只为保存 nai_enabled）
+            cursor.execute("""
+                INSERT INTO scene_states
+                (chat_id, enabled, nai_enabled, created_at, updated_at)
+                VALUES (?, 0, ?, ?, ?)
+            """, (chat_id, 1 if enabled else 0, now, now))
+            logger.info(f"为 {chat_id} 创建场景状态记录（用于 NAI 开关）")
 
         conn.commit()
         conn.close()

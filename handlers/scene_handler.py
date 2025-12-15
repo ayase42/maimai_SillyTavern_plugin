@@ -9,6 +9,7 @@ import random
 from typing import Tuple, Optional, Dict, Any, List
 from datetime import datetime
 
+from maim_message import Seg
 from src.plugin_system.base.base_events_handler import BaseEventHandler
 from src.plugin_system.base.component_types import EventType, EventHandlerInfo, MaiMessages, CustomEventHandlerResult, ComponentType
 from src.config.config import global_config
@@ -108,13 +109,16 @@ class SceneFormatHandler(BaseEventHandler):
                 conversation_context=planner_context
             )
 
-            # 步骤2：使用reply模型生成场景和回复（考虑所有状态）
+            # 步骤1.5：应用 planner 判断的状态更新到临时状态（让 reply 能看到最新状态）
+            updated_character_status = self._apply_state_updates_preview(character_status, state_decision)
+
+            # 步骤2：使用reply模型生成场景和回复（使用更新后的状态）
             scene_reply = await self._generate_scene_reply(
                 user_message=user_message,
                 current_location=current_state["location"],
                 current_clothing=current_state["clothing"],
                 last_scene=current_state["scene_description"],
-                character_status=character_status,
+                character_status=updated_character_status,  # 使用更新后的状态
                 state_decision=state_decision,
                 conversation_context=reply_context
             )
@@ -153,10 +157,23 @@ class SceneFormatHandler(BaseEventHandler):
 
             logger.info(f"[SceneFormat] 场景回复生成成功")
 
-            await self.send_text(stream_id=chat_id, text=formatted_reply)
+            # 步骤6：如果 NAI 生图已开启，尝试生成配图并与文本一起发送
+            image_path = await self._try_generate_nai_image(session_id, scene_reply)
 
-            # 步骤6：如果 NAI 生图已开启，生成配图
-            await self._try_generate_nai_image(session_id, chat_id, scene_reply)
+            if image_path:
+                # 图文合并发送，构造一个 seglist，文本在前、图片在后
+                segments = [
+                    Seg(type="text", data=formatted_reply),
+                    Seg(type="imageurl", data=f"file://{image_path}")
+                ]
+                await self.send_custom(
+                    stream_id=chat_id,
+                    message_type="seglist",
+                    content=segments
+                )
+            else:
+                # 没有图片，只发送文本
+                await self.send_text(stream_id=chat_id, text=formatted_reply)
 
             # 返回值说明：
             # success=True: 处理成功
@@ -326,194 +343,132 @@ class SceneFormatHandler(BaseEventHandler):
 {user_message}
 
 【任务】
-你需要严格判断：根据用户的消息和当前对话内容，哪些状态需要改变？
+你需要合理判断：根据用户的消息和当前对话内容，哪些状态需要改变？
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【严格变化规则 - 必须遵守】
+【状态变化原则】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. 地点变化（必须满足以下条件之一）：
-   ✓ 用户明确说"去XX"、"前往XX"、"来到XX"
-   ✓ 用户描述已经到达新地点（如"这里是图书馆"）
-   ✗ 仅讨论某地点，不算变化
-   ✗ 想去但未行动，不算变化
+**核心原则**：
+1. 符合真实的生理和心理反应
+2. 根据场景强度合理判断，不要机械套用规则
+3. 心理唤起（幻想、臆想）也会引起生理反应
+4. 状态变化要渐进，不要突然跳跃
+5. 有互动/有情节就应该有反应，不要过度保守
 
-2. 着装变化（必须满足以下条件之一）：
-   ✓ 用户明确说"换衣服"、"脱下XX"、"穿上XX"
-   ✓ 移动到强制特定着装的场所（如泳池→泳装）
-   ✗ 仅提到衣服，不算变化
-   ✗ 衣服损坏不改变着装字段（在生理状态描述）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【各状态说明】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3. 生理状态 (physiological_state)：
-   - 默认："呼吸平稳"
-   - 仅在有明确身体反应时更新（如抚摸→"身体微微颤抖"）
-   - 普通对话保持不变
+**1. 地点变化**
+- 用户明确移动到新地点时更新
+- 没有明确移动不变化
 
-4. 阴道状态 (vaginal_state)：
-   - 默认："放松"
-   - 变化条件：仅在有插入、刺激、高潮等明确性行为时
-   - 可选值："放松"、"轻微收缩"、"无意识收缩"、"紧绷"、"痉挛"
-   - 普通对话【禁止】修改此项
+**2. 着装变化**
+- 用户明确换装、脱衣、穿衣时更新
+- 衣服损坏在生理状态或body_condition中描述
 
-5. 湿润度 (vaginal_wetness)：
-   - 默认："正常"
-   - 变化条件：仅在性刺激、爱抚、高潮等情况下
-   - 递进顺序："正常" → "微湿" → "湿润" → "淫湿" → "爱液横流"
-   - 普通对话【禁止】修改此项
+**3. 生理状态 (physiological_state)**
+- 默认："呼吸平稳"
+- 根据场景合理描述当前的整体生理状态
+- 包括：呼吸、颤抖、发热、心跳、紧张等
 
-6. 快感值 (pleasure_value)：
-   - 默认：0
-   - 增加条件（严格）：
-     * 轻度刺激：+5~10
-     * 中度刺激：+10~20
-     * 强烈刺激：+20~30
-     * 高潮：+40~60
-   - 减少条件：高潮后重置或休息恢复
-   - 【禁止】无性内容时增加快感值
-   - 【禁止】单次增加超过60
+**4. 阴道状态 (vaginal_state)**
+- 默认："放松"
+- 可选值："放松"、"轻微收缩"、"无意识收缩"、"紧绷"、"痉挛"
+- 仅在明确性行为（插入、刺激等）时更新
 
-7. 污染度 (corruption_level)：
-   - 默认：0
-   - 增加条件（极其严格）：
-     * 首次性行为：+5
-     * 被多人侵犯：+8~15
-     * 接触腐蚀物质：+3~10
-     * 被灌输淫乱思想：+2~5
-   - 【禁止】普通性行为增加污染度
-   - 【禁止】无明确侵蚀事件时增加
-   - 【禁止】单次增加超过20
+**5. 湿润度 (vaginal_wetness)**
+- 默认："正常"
+- 递进顺序："正常" → "微湿" → "湿润" → "淫湿" → "爱液横流"
+- 根据唤起程度合理更新（性刺激、爱抚、甚至强烈的幻想都可能引起）
+- 符合真实生理反应
 
-8. 体内精液 (semen_volume 和 semen_sources)：
-   - 默认：0ml, []
-   - 增加条件：仅限明确的体内射精
-     * 一次内射：+30~80ml（取决于描述）
-     * 同时记录来源：将射精者名称添加到 semen_sources 数组
-   - 减少条件：清理、流出、时间流逝
-   - 【禁止】无内射时增加
-   - 示例输出：
-     {{
-       "semen_volume": 60,
-       "semen_sources": ["用户"]
-     }}
+**6. 快感值 (pleasure_value)**
+- 默认：0，范围：0~阈值（默认100）
+- 根据刺激/唤起强度合理增加，不要机械套用固定数值
+- 高潮后会自动重置
+- 单次增加上限：60
+- 心理唤起（幻想）也会增加快感值
 
-9. 阴道内异物 (vaginal_foreign)：
-   - 默认：[]
-   - 增加条件：明确描述将非液体异物植入阴道内
-     * 示例：触手、玩具、药物胶囊等
-   - 格式：数组，记录异物名称
-   - 示例输出：{{"vaginal_foreign": ["一根触手", "震动棒"]}}
+**7. 污染度 (corruption_level)**
+- 默认：0，范围：0~100
+- **严格限制**：仅在明确的腐化事件时增加
+  * 首次性行为、被多人侵犯、接触腐蚀物质、被灌输淫乱思想等
+- 普通性行为不增加污染度
+- 单次增加上限：20
 
-10. 怀孕状态 (pregnancy_status, pregnancy_source, pregnancy_counter)：
-    - 默认："未受孕", null, 0
-    - 变化为"受孕中"：仅限特殊剧情需要
-    - 受孕时需同时设置：
-      * pregnancy_status: "受孕中"
-      * pregnancy_source: "父亲名称"
-      * pregnancy_counter: 0（从0开始计数）
-    - 【严格禁止】随意改变此项
-    - 示例输出：
-      {{
-        "pregnancy_status": "受孕中",
-        "pregnancy_source": "用户",
-        "pregnancy_counter": 0
-      }}
+**8. 体内精液 (semen_volume, semen_sources)**
+- 默认：0ml, []
+- 仅在明确体内射精时增加（+30~80ml）
+- 同时记录来源到 semen_sources 数组
+- 清理、流出时减少
 
-11. 性癖经验 (fetishes)：
-    - 默认：{{}}
-    - 增加条件：体验对应性癖内容
-    - 每次增加：+5~15exp
-    - 【禁止】无相关内容时增加
-    - 格式：对象，键为性癖名称，值为包含"经验"和"等级"的对象
-    - 示例输出：
-      {{
-        "fetishes": {{
-          "口交": {{"经验": 10, "等级": 1}},
-          "触手": {{"经验": 8, "等级": 1}}
-        }}
-      }}
-    - 注意：只输出需要增加经验的性癖，不需要输出完整列表
+**9. 阴道内异物 (vaginal_foreign)**
+- 默认：[]
+- 明确植入异物时更新（数组格式）
 
-12. 道具栏 (inventory)：
-    - 默认：[]
-    - 增加条件：明确描述获得、拾取、购买道具
-    - 删除条件：明确描述使用、丢弃、损坏道具
-    - 格式：数组，记录道具名称
-    - 示例输出（添加）：{{"inventory": ["钥匙", "药水"]}}
-    - 示例输出（删除）：{{"inventory": []}}  # 清空道具栏
-    - 注意：输出完整的新道具栏内容，而非增量
+**10. 怀孕状态 (pregnancy_status, pregnancy_source, pregnancy_counter)**
+- 默认："未受孕", null, 0
+- **极其严格**：仅在特殊剧情需要时变为"受孕中"
+- 不要随意改变
 
-13. 后穴开发度 (anal_development)：
-    - 默认：0
-    - 数值范围：0-100
-    - 增加条件（严格）：
-      * 首次后穴刺激：+5~10
-      * 持续训练：+2~5
-      * 强烈扩张：+10~20
-    - 【禁止】无明确后穴刺激时增加
-    - 【禁止】单次增加超过20
-    - 示例输出：{{"anal_development": 5}}
+**11. 性癖经验 (fetishes)**
+- 默认：{{}}
+- 体验对应性癖内容时增加经验（+5~15exp）
+- 格式：{{"性癖名": {{"经验": 值, "等级": 值}}}}
 
-14. 阴道容量 (vaginal_capacity)：
-    - 默认：100
-    - 数值范围：50-300
-    - 增加条件：明确的过度扩张、训练
-      * 轻度扩张：+5~10
-      * 中度扩张：+10~20
-      * 极限扩张：+20~40
-    - 减少条件：长时间休息恢复（自然缩紧）
-    - 【禁止】普通性行为改变容量
-    - 【禁止】单次增加超过40
-    - 示例输出：{{"vaginal_capacity": 10}}
+**12. 道具栏 (inventory)**
+- 默认：[]
+- 明确获得或失去道具时更新
+- 输出完整道具栏
 
-15. 永久性身体改造 (permanent_mods)：
-    - 默认：{{}}
-    - 增加条件（极其严格）：明确描述永久性改造行为
-      * 纹身、烙印：添加对应记录
-      * 穿孔、穿环：添加位置和类型
-      * 药物永久改造：添加效果描述
-    - 【严格禁止】随意添加
-    - 格式：对象，键为改造类型，值为描述
-    - 示例输出：
-      {{
-        "permanent_mods": {{
-          "纹身": "下腹部淫纹",
-          "乳环": "双乳穿环"
-        }}
-      }}
+**13. 后穴开发度 (anal_development)**
+- 默认：0，范围：0~100
+- 仅在明确后穴刺激时增加
+- 单次增加上限：20
 
-16. 身体部位状况 (body_condition)：
-    - 默认：{{}}
-    - 用途：记录身体各部位的特殊状态（补充 physiological_state）
-    - 更新条件：某个身体部位有持续性的特殊状态
-    - 格式：对象，键为部位名称，值为状态描述
-    - 示例输出：
-      {{
-        "body_condition": {{
-          "乳房": "红肿敏感",
-          "大腿": "布满吻痕"
-        }}
-      }}
-    - 注意：与 physiological_state 区别
-      * physiological_state: 整体生理状态（如"身体微微颤抖"）
-      * body_condition: 具体部位的持续状态
+**14. 阴道容量 (vaginal_capacity)**
+- 默认：100，范围：50~300
+- 仅在明确扩张训练时增加
+- 普通性行为不改变
+- 单次增加上限：40
+
+**15. 永久改造 (permanent_mods)**
+- 默认：{{}}
+- **严格限制**：仅在明确永久性改造时添加（纹身、穿孔等）
+
+**16. 身体部位状况 (body_condition)**
+- 默认：{{}}
+- 记录各部位的持续性特殊状态
+- 格式：{{"部位": "状态"}}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【判断示例（参考，不是固定规则）】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+场景1：用户温柔拥抱
+→ 可能：生理状态更新, 快感值小幅增加
+
+场景2：bot内心幻想与用户的亲密接触
+→ 可能：生理状态更新, 快感值增加, 湿润度可能微湿
+
+场景3：用户爱抚身体
+→ 可能：生理状态更新, 快感值增加, 湿润度增加
+
+场景4：普通闲聊
+→ 角色状态更新为 {{}}
+
+场景5：明确性行为
+→ 多项状态更新（根据具体内容判断）
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【默认行为】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-如果是普通日常对话（无性内容），"角色状态更新" 必须为空对象 {{}}
-如果没有移动，地点保持不变
-如果没有换装，着装保持不变
-
-【错误示例】❌
-- 用户只是聊天 → 快感值+5  （错误！无性内容不增加）
-- 用户提到图书馆 → 污染度+3  （错误！无侵蚀事件）
-- 普通对话 → 湿润度改为"湿润"  （错误！无刺激）
-
-【正确示例】✓
-- 用户抚摸胸部 → 快感值+8, 生理状态"身体敏感地颤抖"
-- 明确内射 → 体内精液+60, 湿润度"淫湿"
-- 仅聊天 → 角色状态更新为 {{}}
+- 普通日常对话（无互动/无情节）→ "角色状态更新" 为 {{}}
+- 没有移动 → 地点不变
+- 没有换装 → 着装不变
 
 【输出格式】
 严格按照JSON格式输出：
@@ -553,11 +508,11 @@ class SceneFormatHandler(BaseEventHandler):
 ```
 
 【重要提醒】
-- 如果用户消息是普通日常对话，"角色状态更新" 必须为 {{}}
-- 每个状态变化都必须有明确的理由和条件
+- 如果是普通日常对话（无互动），"角色状态更新" 必须为 {{}}
+- 每个状态变化要合理，符合场景逻辑
 - 遵守数值范围限制
 - 只输出需要更新的字段，不需要输出完整列表
-- 宁可保守，不要过度判断"""
+- 有互动就有反应，合理判断，不要过度保守"""
 
         try:
             logger.info(f"[Planner] Prompt:\n{prompt}")
@@ -574,6 +529,9 @@ class SceneFormatHandler(BaseEventHandler):
                 # 解析失败，默认不变化
                 return self._get_default_decision()
 
+            # 处理一些模型可能输出的带空格字段（例如“地 点 变 化”）
+            decision = self._normalize_planner_decision(decision)
+
             # 确保必要字段存在
             decision.setdefault("地点变化", False)
             decision.setdefault("新地点", "")
@@ -589,6 +547,61 @@ class SceneFormatHandler(BaseEventHandler):
         except Exception as e:
             logger.error(f"[Planner] 状态决策失败: {e}")
             return self._get_default_decision()
+
+    def _normalize_planner_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """清除planner返回键名和值中的多余空格，确保字段能被识别"""
+        normalized = {}
+        for key, value in decision.items():
+            clean_key = re.sub(r"\s+", "", str(key))
+
+            # 清理值中的空格
+            if isinstance(value, str):
+                # 字符串值：移除所有空格
+                clean_value = re.sub(r"\s+", "", value) if value else value
+            elif isinstance(value, dict):
+                # 字典值：递归清理
+                clean_value = self._clean_dict_spaces(value)
+            elif isinstance(value, list):
+                # 列表值：清理每个元素
+                clean_value = [re.sub(r"\s+", "", str(v)) if isinstance(v, str) else v for v in value]
+            else:
+                clean_value = value
+
+            normalized[clean_key] = clean_value
+
+        # 确保角色状态更新字段仍然是字典
+        if "角色状态更新" not in normalized:
+            for alias in ("角色状态", "状态更新"):
+                if alias in normalized:
+                    normalized["角色状态更新"] = normalized[alias]
+                    break
+
+        updates = normalized.get("角色状态更新")
+        if isinstance(updates, dict):
+            normalized["角色状态更新"] = updates
+        else:
+            normalized["角色状态更新"] = {}
+
+        return normalized
+
+    def _clean_dict_spaces(self, d: Dict[str, Any]) -> Dict[str, Any]:
+        """递归清理字典中所有字符串值的空格"""
+        cleaned = {}
+        for key, value in d.items():
+            clean_key = re.sub(r"\s+", "", str(key)) if isinstance(key, str) else key
+
+            if isinstance(value, str):
+                clean_value = re.sub(r"\s+", "", value) if value else value
+            elif isinstance(value, dict):
+                clean_value = self._clean_dict_spaces(value)
+            elif isinstance(value, list):
+                clean_value = [re.sub(r"\s+", "", str(v)) if isinstance(v, str) else v for v in value]
+            else:
+                clean_value = value
+
+            cleaned[clean_key] = clean_value
+
+        return cleaned
 
     def _get_default_decision(self) -> Dict[str, Any]:
         """返回默认决策（无变化）"""
@@ -848,6 +861,42 @@ class SceneFormatHandler(BaseEventHandler):
             logger.info(f"[Planner] 状态验证通过: {list(validated_updates.keys())}")
 
         return decision
+
+    def _apply_state_updates_preview(self, current_status: Dict[str, Any], state_decision: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        应用 planner 判断的状态更新，生成临时预览状态（供 reply 使用）
+
+        Args:
+            current_status: 当前角色状态
+            state_decision: planner 判断的状态变化
+
+        Returns:
+            更新后的临时状态（不修改数据库）
+        """
+        import json
+
+        # 深拷贝当前状态，避免修改原始数据
+        preview_status = dict(current_status)
+        status_updates = state_decision.get("角色状态更新", {})
+
+        if not status_updates:
+            return preview_status
+
+        # 应用增量更新
+        for key, value in status_updates.items():
+            if isinstance(value, (int, float)) and key in ['pleasure_value', 'corruption_level', 'semen_volume', 'anal_development', 'vaginal_capacity']:
+                # 数值字段：累加
+                current_value = preview_status.get(key, 0) or 0
+                preview_status[key] = current_value + value
+            elif key in ['semen_sources', 'vaginal_foreign', 'inventory', 'fetishes', 'permanent_mods', 'body_condition']:
+                # JSON 字段：直接替换（已经是 JSON 字符串）
+                preview_status[key] = value
+            else:
+                # 其他字段：直接替换
+                preview_status[key] = value
+
+        logger.debug(f"[SceneFormat] 应用状态更新预览: {list(status_updates.keys())}")
+        return preview_status
 
     async def _generate_scene_reply(
         self,
@@ -1137,25 +1186,27 @@ class SceneFormatHandler(BaseEventHandler):
         except Exception as e:
             logger.error(f"[SceneFormat] 更新状态失败: {e}")
 
-    async def _try_generate_nai_image(self, session_id: str, chat_id: str, scene_reply: Dict[str, str]):
+    async def _try_generate_nai_image(self, session_id: str, scene_reply: Dict[str, str]) -> Optional[str]:
         """
         步骤6：尝试生成 NAI 配图（如果已开启且概率触发）
 
         Args:
             session_id: 会话ID（用于检查 NAI 开关状态）
-            chat_id: 聊天流ID（用于发送图片）
             scene_reply: 场景回复数据
+
+        Returns:
+            Optional[str]: 成功时返回图片文件路径，否则返回None
         """
         try:
             # 检查 NAI 生图是否启用
             if not self.db.get_nai_enabled(session_id):
-                return
+                return None
 
             # 检查 API Key 是否配置
             api_key = self.get_config("nai.api_key", "")
             if not api_key:
                 logger.warning("[NAI] API Token 未配置，跳过生图")
-                return
+                return None
 
             # 概率判断
             trigger_probability = self.get_config("nai.trigger_probability", 0.3)
@@ -1167,7 +1218,7 @@ class SceneFormatHandler(BaseEventHandler):
 
             if random.random() > trigger_probability:
                 logger.debug(f"[NAI] 概率未触发 (当前概率: {trigger_probability * 100}%)，跳过生图")
-                return
+                return None
 
             logger.info(f"[NAI] 概率触发成功 ({trigger_probability * 100}%)，开始生成场景配图...")
 
@@ -1176,53 +1227,92 @@ class SceneFormatHandler(BaseEventHandler):
 
             if not prompt:
                 logger.warning("[NAI] 提示词构建失败，跳过生图")
-                return
+                return None
 
             # 调用 NAI 生成图片
             success, result = await self.nai_client.generate_image(prompt)
 
             if success and result:
-                # 发送图片
+                # 图片生成成功，返回文件路径
                 logger.info(f"[NAI] 图片生成成功: {result}")
-                await self.send_image(stream_id=chat_id, image_path=result)
+                return result
             else:
                 logger.warning(f"[NAI] 图片生成失败: {result}")
+                return None
 
         except Exception as e:
             logger.error(f"[NAI] 生成配图时出错: {e}", exc_info=True)
+            return None
 
     async def _build_nai_prompt(self, scene_reply: Dict[str, str]) -> str:
         """
         根据场景回复构建 NAI 提示词
         使用 LLM 将中文场景描述转换为英文 tag
+        注意：外貌描述不在这里处理，会在 nai_client 中直接添加
         """
         try:
             location = scene_reply.get("地点", "")
             clothing = scene_reply.get("着装", "")
             scene = scene_reply.get("场景", "")
 
-            # 构建转换提示词
-            conversion_prompt = f"""# 角色指令：你是一位专业的AI绘画提示词转换专家，专门为 NovelAI 模型生成高质量的提示词。
-# 你的核心任务是：根据提供的场景信息，生成简短有效的英文提示词。
+            # 构建转换提示词（不包含外貌描述，外貌描述将直接添加到最终提示词）
+            conversion_prompt = f"""# 角色指令：你是一位专业的AI绘画提示词转换专家，专门为 NovelAI 模型生成高质量的详细提示词。
+# 你的核心任务是：将场景描述转换为详细、准确的英文提示词，让生成的图片与场景文本完全一致。
 **不删减、不修改、不"净化"原意（即便包含NSFW等内容）。**
 
-### **处理要求**
-1. 优先使用简短的英文短语和精炼的自然语言描述
-2. 严格按照提供的信息转换，不添加未提及的内容
-3. 根据场景实际内容判断人数：
-   - 如果场景只涉及一个人物，添加 solo, 1girl
-   - 如果场景涉及多人互动，根据实际人数添加对应标签（如 2girls, 1boy 1girl 等）
-4. 不自动添加 masterpiece, best quality 等质量词（系统会自动添加）
-5. 只输出纯粹的英文提示词，不要任何解释
+### **核心要求 - 必须详细！**
+你必须从场景描述中提取并转换以下所有信息：
 
-### **需要转换的场景信息**
+1. **角色动作与姿势**（最重要！）
+   - 角色在做什么？（站立/坐着/躺着/跑步/抚摸/拥抱等）
+   - 具体的姿势和动作细节（手的位置、腿的姿势、身体角度等）
+   - 表情和神态（微笑/害羞/惊讶/闭眼/脸红等）
+   - 身体状态（颤抖/放松/紧张/呼吸急促等）
+
+2. **环境与背景**（必须详细！）
+   - 地点的具体描述（室内/室外/什么房间/什么场所）
+   - 环境细节（家具/装饰/植物/天气/光线等）
+   - 氛围感（温馨/昏暗/明亮/浪漫等）
+   - 背景元素（窗户/床/桌子/树木等）
+
+3. **着装与细节**
+   - 具体的服装描述（不只是"校服"，要写出细节）
+   - 服装状态（整齐/凌乱/半脱/敞开等）
+   - 配饰和细节
+
+4. **人物关系与构图**
+   - 场景中有几个人？
+   - 人物之间的互动和位置关系
+   - 视角和构图（from above/from below/close-up等）
+
+5. **特殊状态和氛围**
+   - 如果有特殊的身体状态或情绪，必须体现
+   - 场景的整体氛围和感觉
+
+### **转换要求**
+- 使用英文短语和标签，用逗号分隔
+- 优先使用具体、形象的描述词
+- 不要添加未提及的内容，但要充分挖掘已有信息
+- 根据场景实际人数添加人数标签（solo/1girl, 2girls, 1boy 1girl等）
+- 不添加 masterpiece, best quality 等质量词（系统会自动添加）
+- 只输出英文提示词，不要解释
+
+### **场景信息**
+- 人物名称：{global_config.bot.nickname}
 - 地点：{location}
 - 着装：{clothing}
-- 场景描述：{scene[:500]}
+- 场景描述：
+{scene}
+
+### **输出示例**
+好的示例（详细）：
+girl sitting on bed, legs crossed, hand on chin, thoughtful expression, blushing, looking at phone, bedroom, warm lighting, window with curtains, books on shelf, cozy atmosphere, indoor, solo, 1girl
+
+差的示例（太简略）：
+girl in room, sitting, solo, 1girl
 
 ### **输出格式**
-直接输出英文提示词，用逗号分隔，例如：
-girl in white dress, standing in garden, smile, solo, 1girl"""
+直接输出详细的英文提示词，用逗号分隔："""
 
             # 使用 planner 模型进行转换（更快更便宜）
             response, _ = await self.planner_llm.generate_response_async(conversion_prompt)

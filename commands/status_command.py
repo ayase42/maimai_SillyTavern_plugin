@@ -2,7 +2,7 @@
 状态栏显示命令
 """
 import json
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 from src.plugin_system.base.base_command import BaseCommand
 from src.plugin_system.base.component_types import CommandInfo, ComponentType
 from src.chat.message_receive.message import MessageRecv
@@ -26,8 +26,9 @@ class StatusCommand(BaseCommand):
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         """执行命令"""
         stream_id = self.message.chat_stream.stream_id
-        user_id = str(self.message.message_info.user_info.user_id)
-        session_id = f"{stream_id}:{user_id}"
+        user_info = getattr(self.message.message_info, "user_info", None)
+        user_id = str(getattr(user_info, "user_id", ""))
+        session_id, _ = self._resolve_session_id(stream_id, user_id)
 
         logger.info(f"[StatusCommand] 查看状态: {session_id}")
 
@@ -44,6 +45,11 @@ class StatusCommand(BaseCommand):
 
         # 获取角色状态
         status = self.db.get_character_status(session_id)
+
+        # 若历史场景仍在但角色状态缺失（例如升级或手动清理），补建默认状态
+        if not status and self.db.get_scene_state(session_id):
+            self.db.init_character_status(session_id)
+            status = self.db.get_character_status(session_id)
 
         if not status:
             reply = "未找到角色状态\n请先使用 /sc on 启动场景模式"
@@ -147,6 +153,29 @@ class StatusCommand(BaseCommand):
         except json.JSONDecodeError:
             logger.warning(f"JSON解析失败: {text}")
             return {} if text.startswith('{') else []
+
+    def _resolve_session_id(self, stream_id: str, user_id: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """解析真实会话ID，兼容旧数据结构"""
+        session_id = f"{stream_id}:{user_id}" if user_id else stream_id
+
+        state = self.db.get_scene_state(session_id)
+        if state:
+            return session_id, state
+
+        if user_id:
+            user_state = self.db.get_state_by_user(stream_id, user_id)
+            if user_state:
+                return user_state["chat_id"], user_state
+
+        legacy_state = self.db.get_scene_state(stream_id)
+        if legacy_state:
+            return stream_id, legacy_state
+
+        fallback_state = self.db.get_latest_session_state(stream_id)
+        if fallback_state:
+            return fallback_state["chat_id"], fallback_state
+
+        return session_id, None
 
     @classmethod
     def get_command_info(cls) -> CommandInfo:

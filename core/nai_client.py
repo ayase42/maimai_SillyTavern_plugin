@@ -59,12 +59,22 @@ class NaiClient:
             return False, "NAI API Token 未配置"
 
         # 构建完整提示词
-        prompt_suffix = self.get_config("nai.prompt_suffix", "masterpiece, best quality")
-        artist_preset = self.get_config("nai.artist_preset", "")
+        # 1. 外貌描述（直接使用，不翻译）
+        appearance_desc = self.get_config("scene.appearance_description", "").strip()
 
+        # 2. 场景描述（已由 LLM 翻译为英文 tag）
         full_prompt = prompt
+
+        # 3. 拼接顺序：外貌描述 + 场景tag + 正面提示词后缀
+        if appearance_desc:
+            full_prompt = f"{appearance_desc}, {full_prompt}"
+
+        prompt_suffix = self.get_config("nai.prompt_suffix", "masterpiece, best quality")
         if prompt_suffix:
-            full_prompt = f"{prompt}, {prompt_suffix}"
+            full_prompt = f"{full_prompt}, {prompt_suffix}"
+
+        # 4. 画师预设单独处理
+        artist_preset = self.get_config("nai.artist_preset", "")
 
         # 构建请求参数
         params = {

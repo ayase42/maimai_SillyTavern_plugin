@@ -24,6 +24,18 @@ class HelpCommand(BaseCommand):
         """执行命令"""
         logger.info("[HelpCommand] 显示帮助信息")
 
+        # 权限检查
+        from .admin_command import SceneAdminCommand
+        message_info = self.message.message_info
+        user_id = str(message_info.user_info.user_id)
+        platform = getattr(message_info, "platform", "")
+        group_info = getattr(message_info, "group_info", None)
+        chat_id = group_info.group_id if group_info and getattr(group_info, "group_id", None) else user_id
+
+        if not SceneAdminCommand.check_user_permission(platform, chat_id, user_id, self.get_config):
+            await self.send_text("❌ 当前会话已开启管理员模式，仅管理员可使用")
+            return False, "没有权限", 2
+
         reply = """📖 场景插件帮助 (可用 /sc 或 /scene)
 
 【场景控制】
