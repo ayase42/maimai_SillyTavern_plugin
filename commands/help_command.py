@@ -50,13 +50,11 @@ class HelpCommand(BaseCommand):
 /sc status reset   - 重置角色状态到初始值
 
 【NAI 生图】
-/sc nai on       - 开启场景配图（智能触发）
-/sc nai off      - 关闭场景配图
+/sc nai on/off   - 开启/关闭场景配图
 /sc nai          - 查看开关状态
 
 【日程管理】
-/sc 日程           - 生成今日日程
-/sc schedule       - 同上
+/sc 日程/schedule  - 生成今日日程
 /sc schedule view  - 查看当前日程
 （日程每天自动生成，默认凌晨5点）
 
@@ -64,6 +62,7 @@ class HelpCommand(BaseCommand):
 /sc style list      - 列出所有文风
 /sc style use <n>   - 选择文风（序号或名称）
 /sc style clear     - 清除文风
+/sc pov 1/3         - 切换第一/三人称视角
 
 【管理员】
 /sc admin on/off  - 开启/关闭管理员模式
