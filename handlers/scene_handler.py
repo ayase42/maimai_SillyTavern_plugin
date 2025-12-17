@@ -263,18 +263,13 @@ class SceneFormatHandler(BaseEventHandler):
             # 获取更新后的状态
             final_status = self.db.get_character_status(session_id) or {}
 
-            # 步骤4：记录历史
-            self.db.add_scene_history(
-                chat_id=session_id,
-                location=scene_reply["地点"],
-                clothing=scene_reply["着装"],
-                scene_description=scene_reply["场景"],
-                user_message=user_message,
-                bot_reply=scene_reply["场景"]
-            )
-
-            # 步骤5：格式化输出
+            # 步骤4：格式化输出
             scene_text = scene_reply['场景'].replace('\\n\\n', '\n\n').replace('\\n', '\n')
+
+            # 给每段开头加两个空格缩进
+            paragraphs = scene_text.split('\n\n')
+            indented_paragraphs = ['  ' + p.strip() for p in paragraphs if p.strip()]
+            scene_text = '\n\n'.join(indented_paragraphs)
 
             # 使用更美观的格式
             formatted_reply = (
@@ -283,6 +278,16 @@ class SceneFormatHandler(BaseEventHandler):
                 f"│ 👗 {scene_reply['着装']}\n"
                 f"└─────────────────────┘\n\n"
                 f"{scene_text}"
+            )
+
+            # 步骤5：记录历史（保存完整格式化回复）
+            self.db.add_scene_history(
+                chat_id=session_id,
+                location=scene_reply["地点"],
+                clothing=scene_reply["着装"],
+                scene_description=scene_reply["场景"],
+                user_message=user_message,
+                bot_reply=formatted_reply
             )
 
             # 获取状态变化提示和状态栏
