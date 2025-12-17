@@ -63,18 +63,26 @@ class NaiClient:
         except (TypeError, ValueError):
             return 120
 
-    def _get_ssl_context(self) -> Optional[ssl.SSLContext]:
-        """获取 SSL 上下文配置"""
+    def _get_ssl_context(self):
+        """获取 SSL 配置"""
         ssl_verify = self.get_config("nai.ssl_verify", True)
         if ssl_verify:
             return None  # 使用默认 SSL 验证
         else:
-            # 创建不验证证书的 SSL 上下文（仅在明确配置时使用）
+            # 创建宽松的 SSL 上下文（仅在明确配置时使用）
             logger.warning("[NAI] SSL 验证已禁用，这可能存在安全风险")
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            return ctx
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                # 允许旧版本 TLS 协议
+                ctx.options &= ~ssl.OP_NO_SSLv3
+                ctx.options &= ~ssl.OP_NO_TLSv1
+                ctx.options &= ~ssl.OP_NO_TLSv1_1
+                return ctx
+            except Exception as e:
+                logger.warning(f"[NAI] 创建 SSL 上下文失败: {e}，使用默认配置")
+                return None
 
     async def generate_image(self, prompt: str) -> Tuple[bool, Optional[str]]:
         """

@@ -173,6 +173,8 @@ class DailyScheduleEventHandler(BaseEventHandler):
             result = await generate_schedule(self.db, self.llm)
             if result:
                 logger.info("自动生成日程成功")
+                if DailyScheduleEventHandler._scheduler:
+                    DailyScheduleEventHandler._scheduler.last_execution_date = datetime.now().date()
             else:
                 logger.warning("自动生成日程失败")
         except Exception as e:

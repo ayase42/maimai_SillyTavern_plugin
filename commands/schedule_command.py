@@ -138,14 +138,17 @@ class ScheduleViewCommand(BaseCommand):
         current_activity_idx = -1
 
         for idx, item in enumerate(schedules):
-            start_parts = item.get('time_start', '00:00').split(':')
-            end_parts = item.get('time_end', '00:00').split(':')
-            start_min = int(start_parts[0]) * 60 + int(start_parts[1])
-            end_min = int(end_parts[0]) * 60 + int(end_parts[1])
+            try:
+                start_parts = item.get('time_start', '00:00').split(':')
+                end_parts = item.get('time_end', '00:00').split(':')
+                start_min = int(start_parts[0]) * 60 + int(start_parts[1]) if len(start_parts) >= 2 else 0
+                end_min = int(end_parts[0]) * 60 + int(end_parts[1]) if len(end_parts) >= 2 else 0
 
-            if start_min <= current_minutes < end_min:
-                current_activity_idx = idx
-                break
+                if start_min <= current_minutes < end_min:
+                    current_activity_idx = idx
+                    break
+            except (ValueError, IndexError):
+                continue
 
         # 输出日程
         for idx, item in enumerate(schedules):

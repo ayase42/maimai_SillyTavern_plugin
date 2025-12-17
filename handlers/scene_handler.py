@@ -404,22 +404,25 @@ class SceneFormatHandler(BaseEventHandler):
                 return None
 
             # 智能配图：检查模型是否建议配图
-            should_generate = scene_reply.get("建议配图", None)
+            raw_flag = scene_reply.get("建议配图", None)
+            should_generate = self._coerce_bool(raw_flag)
             nai_prompt = scene_reply.get("nai_prompt", "")
 
             # 如果模型输出了建议配图字段，使用智能配图
-            if should_generate is not None:
-                if not should_generate:
+            if raw_flag is not None:
+                if should_generate is False:
                     logger.debug("[NAI] 模型判断无需配图，跳过")
                     return None
+                if should_generate is True:
+                    if not nai_prompt:
+                        logger.warning("[NAI] 建议配图但未提供 nai_prompt，跳过")
+                        return None
+                    logger.info(f"[NAI] 智能配图触发，prompt: {nai_prompt[:100]}...")
+                else:
+                    logger.warning(f"[NAI] 建议配图标记无法解析: {raw_flag}")
+                    raw_flag = None
 
-                if not nai_prompt:
-                    logger.warning("[NAI] 建议配图但未提供 nai_prompt，跳过")
-                    return None
-
-                logger.info(f"[NAI] 智能配图触发，prompt: {nai_prompt[:100]}...")
-
-            else:
+            if raw_flag is None:
                 # 兜底：模型未输出配图字段，使用概率触发
                 trigger_probability = self.get_config("nai.trigger_probability", 0.3)
                 try:
@@ -534,6 +537,21 @@ class SceneFormatHandler(BaseEventHandler):
         except Exception:
             return False
         return False
+
+    @staticmethod
+    def _coerce_bool(value) -> Optional[bool]:
+        """宽松解析布尔值，兼容字符串/数字"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y", "是", "开启", "需要"}:
+                return True
+            if normalized in {"false", "0", "no", "n", "否", "关闭", "不需要"}:
+                return False
+        return None
 
     @classmethod
     def get_handler_info(cls) -> EventHandlerInfo:

@@ -22,8 +22,11 @@ class SceneCommand(BaseCommand):
 
     command_name = "scene"
     command_description = "场景模式控制命令，支持on/off/init"
-    # 支持 /sc 和 /scene，避免和 preset、help、admin、status、nai、style、文风 命令冲突
-    command_pattern = r"^/s(?:cene|c)(?:\s+(?!preset\b|help\b|admin\b|status\b|nai\b|style\b|文风\b|init\s+.+).*)?$"
+    # 支持 /sc 和 /scene，避免和其他子命令冲突
+    command_pattern = (
+        r"^/s(?:cene|c)"
+        r"(?:\s+(?!preset\b|help\b|admin\b|status\b|nai\b|style\b|文风\b|schedule\b|日程\b|init\s+.+).*)?$"
+    )
 
     def __init__(self, message: MessageRecv, plugin_config: Optional[dict] = None):
         super().__init__(message, plugin_config)

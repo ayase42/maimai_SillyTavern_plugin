@@ -140,16 +140,24 @@ def normalize_planner_decision(decision: Dict[str, Any]) -> Dict[str, Any]:
     """
     清除planner返回键名中的多余空格，确保字段能被识别
     注意：只清理键名中的空格，保留字符串值中的空格（如生理状态描述）
+    同时处理布尔字符串 "true"/"false" 转换为真正的布尔值
     """
     normalized = {}
+    # 布尔字段列表
+    bool_fields = {"地点变化", "着装变化", "建议配图"}
+
     for key, value in decision.items():
         # 只清理键名中的空格
         clean_key = re.sub(r"\s+", "", str(key))
 
         # 处理值：只清理键名，保留字符串值
         if isinstance(value, str):
-            # 字符串值：只清理首尾空白，保留内部空格
-            clean_value = value.strip()
+            # 检查是否是布尔字段，如果是则转换字符串为布尔值
+            if clean_key in bool_fields:
+                clean_value = value.lower().strip() in ("true", "1", "yes", "是")
+            else:
+                # 字符串值：只清理首尾空白，保留内部空格
+                clean_value = value.strip()
         elif isinstance(value, dict):
             # 字典值：递归清理键名
             clean_value = _clean_dict_key_spaces(value)

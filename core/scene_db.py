@@ -350,7 +350,11 @@ class SceneDB:
             if start_minutes is None or end_minutes is None:
                 continue
 
-            crosses_midnight = end_minutes <= start_minutes
+            # 相同时间视为无效时间段，跳过
+            if start_minutes == end_minutes:
+                continue
+
+            crosses_midnight = end_minutes < start_minutes
 
             if not crosses_midnight:
                 if start_minutes <= current_minutes < end_minutes:

@@ -2,6 +2,7 @@
 场景生成模块
 负责调用 LLM 生成场景内容和状态判断
 """
+import re
 from typing import Dict, Any, Optional, Tuple, Callable
 from src.config.config import global_config
 from src.common.logger import get_logger
@@ -63,6 +64,8 @@ class SceneGenerator:
             decision.setdefault("着装变化", False)
             decision.setdefault("新着装", "")
             decision.setdefault("角色状态更新", {})
+            decision["新地点"] = self._normalize_scene_field(decision.get("新地点", ""))
+            decision["新着装"] = self._normalize_scene_field(decision.get("新着装", ""))
 
             return decision
 
@@ -136,6 +139,24 @@ class SceneGenerator:
                     logger.error(f"[Reply] 缺少字段: {field}")
                     return None
 
+            reply_location = self._normalize_scene_field(reply_data.get("地点", ""))
+            reply_clothing = self._normalize_scene_field(reply_data.get("着装", ""))
+
+            final_location = self._normalize_scene_field(final_location)
+            final_clothing = self._normalize_scene_field(final_clothing)
+
+            if reply_location and reply_location != final_location:
+                logger.info("[Reply] 模型输出地点与状态决策不一致，采用模型结果")
+                final_location = reply_location
+                state_decision["地点变化"] = True
+                state_decision["新地点"] = final_location
+
+            if reply_clothing and reply_clothing != final_clothing:
+                logger.info("[Reply] 模型输出着装与状态决策不一致，采用模型结果")
+                final_clothing = reply_clothing
+                state_decision["着装变化"] = True
+                state_decision["新着装"] = final_clothing
+
             reply_data["地点"] = final_location
             reply_data["着装"] = final_clothing
 
@@ -191,19 +212,39 @@ class SceneGenerator:
                 logger.error("[SingleModel] JSON解析失败")
                 return get_default_decision(), None
 
+            # 标准化结果，处理布尔字符串等
+            result = normalize_planner_decision(result)
+
             state_decision = {
                 "地点变化": result.get("地点变化", False),
-                "新地点": result.get("新地点", ""),
+                "新地点": self._normalize_scene_field(result.get("新地点", "")),
                 "着装变化": result.get("着装变化", False),
-                "新着装": result.get("新着装", ""),
+                "新着装": self._normalize_scene_field(result.get("新着装", "")),
                 "角色状态更新": result.get("角色状态更新", {})
             }
 
+            # 根据状态决策确定最终地点和着装
+            if state_decision["地点变化"] and state_decision["新地点"]:
+                final_location = state_decision["新地点"]
+            else:
+                final_location = self._normalize_scene_field(result.get("地点", current_location))
+
+            if state_decision["着装变化"] and state_decision["新着装"]:
+                final_clothing = state_decision["新着装"]
+            else:
+                final_clothing = self._normalize_scene_field(result.get("着装", current_clothing))
+
             scene_reply = {
-                "地点": result.get("地点", current_location),
-                "着装": result.get("着装", current_clothing),
+                "地点": final_location,
+                "着装": final_clothing,
                 "场景": result.get("场景", "")
             }
+
+            # 透传智能配图相关字段，单模型模式也能触发生图逻辑
+            if "建议配图" in result:
+                scene_reply["建议配图"] = result.get("建议配图")
+            if "nai_prompt" in result:
+                scene_reply["nai_prompt"] = result.get("nai_prompt", "")
 
             if not scene_reply["场景"]:
                 logger.error("[SingleModel] 场景内容为空")
@@ -488,3 +529,17 @@ nai_prompt 要求（建议配图=true时必填）：
 【重要】
 - 普通对话时角色状态更新必须为空 {{}}
 - 状态变化要与场景描写一致"""
+
+    @staticmethod
+    def _normalize_scene_field(value: Optional[str]) -> str:
+        """清理地点/着装等短文本中的异常空格"""
+        if not value:
+            return ""
+        text = str(value).replace("\u3000", " ").strip()
+        if not text:
+            return ""
+        # 去除汉字之间的空格
+        text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+        # 再折叠其它空白
+        text = re.sub(r"\s+", " ", text).strip()
+        return text

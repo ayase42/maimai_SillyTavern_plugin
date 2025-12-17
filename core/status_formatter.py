@@ -118,10 +118,11 @@ class StatusFormatter:
         new_corruption = final_status.get("corruption_level", 0) or 0
         if old_corruption != new_corruption:
             delta = new_corruption - old_corruption
+            delta_str = f"{'+' if delta > 0 else ''}{delta}"
             if format_type == "detailed":
-                changes.append(f"污染度: {old_corruption} → {new_corruption} (+{delta})")
+                changes.append(f"污染度: {old_corruption} → {new_corruption} ({delta_str})")
             else:
-                changes.append(f"污染度 +{delta}")
+                changes.append(f"污染度 {delta_str}")
 
         # 生理状态变化
         old_physio = original_status.get("physiological_state", "呼吸平稳")
