@@ -87,7 +87,10 @@ class StateManager:
                 if new_pleasure >= threshold:
                     logger.info(f"[StateManager] 快感值达到阈值({new_pleasure}/{threshold})，触发高潮重置")
                     value = -current_pleasure + (threshold // 4)
-                    validated_updates["physiological_state"] = "高潮后的余韵中颤抖"
+                    # 不再强制设置固定的生理状态，让模型根据场景自行决定
+                    # 只有当模型没有提供生理状态时才设置默认值
+                    if "physiological_state" not in status_updates:
+                        validated_updates["physiological_state"] = "高潮后的余韵"
 
                 validated_updates["pleasure_value"] = value
 
@@ -149,9 +152,19 @@ class StateManager:
                 current_wetness = current_status.get("vaginal_wetness", "正常")
                 current_idx = WETNESS_LEVELS.index(current_wetness) if current_wetness in WETNESS_LEVELS else 0
                 new_idx = WETNESS_LEVELS.index(value)
+
+                # 限制单次变化不超过2级，避免状态跳跃
                 if abs(new_idx - current_idx) > 2:
-                    logger.warning(f"[StateManager] 湿润度变化过大：{current_wetness} → {value}")
-                validated_updates["vaginal_wetness"] = value
+                    # 渐进调整：向目标方向移动2级
+                    if new_idx > current_idx:
+                        adjusted_idx = min(current_idx + 2, len(WETNESS_LEVELS) - 1)
+                    else:
+                        adjusted_idx = max(current_idx - 2, 0)
+                    adjusted_value = WETNESS_LEVELS[adjusted_idx]
+                    logger.warning(f"[StateManager] 湿润度变化过大：{current_wetness} → {value}，调整为 {adjusted_value}")
+                    validated_updates["vaginal_wetness"] = adjusted_value
+                else:
+                    validated_updates["vaginal_wetness"] = value
             else:
                 logger.warning(f"[StateManager] 湿润度值({value})不合法，忽略")
 
@@ -293,9 +306,10 @@ class StateManager:
                     logger.warning(f"[StateManager] 快感值增加({pleasure_delta})超出场景类型({scene_type})范围，限制为{max_range}")
                     status_updates["pleasure_value"] = max_range
                     state_decision["角色状态更新"] = status_updates
+            # 不再提前返回，继续执行后续逻辑（如有需要）
             return state_decision
 
-        # 根据场景类型决定衰减
+        # 根据场景类型决定衰减（仅当planner没有设置快感值时）
         decay = 0
         if scene_type == SCENE_TYPE_NORMAL and current_pleasure > 0:
             decay = DECAY_NORMAL
@@ -350,13 +364,14 @@ class StateManager:
                 status_updates["vaginal_wetness"] = WETNESS_LEVELS[new_wetness_idx]
                 logger.info(f"[StateManager] 一致性修正: 快感值下降，湿润度调整为{WETNESS_LEVELS[new_wetness_idx]}")
 
-        # 规则2：高快感值时自动更新生理状态
+        # 规则2：高快感值时自动更新生理状态（仅当模型未提供时作为建议）
         updated_physio = status_updates.get("physiological_state", "")
         current_physio = current_status.get("physiological_state", "")
         is_orgasm_state = any(keyword in updated_physio or keyword in current_physio
                              for keyword in ["高潮", "余韵", "颤抖", "痉挛"])
 
-        if "physiological_state" not in status_updates and scene_type != SCENE_TYPE_REST and not is_orgasm_state:
+        # 只有当模型没有设置生理状态，且不在高潮状态时，才根据快感值提供建议
+        if not updated_physio and scene_type != SCENE_TYPE_REST and not is_orgasm_state:
             if final_pleasure >= 80:
                 status_updates["physiological_state"] = "呼吸急促，身体剧烈颤抖"
             elif final_pleasure >= 60:

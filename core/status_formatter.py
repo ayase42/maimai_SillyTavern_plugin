@@ -202,8 +202,8 @@ class StatusFormatter:
             wetness_icon = self._get_wetness_icon(wetness)
             parts.append(f"{wetness_icon} {wetness}")
 
-            # 生理状态截取更多字符
-            parts.append(f"🌡️ {physio[:12]}")
+            # 生理状态截取更多字符（避免有意义信息丢失）
+            parts.append(f"🌡️ {physio[:20]}")
 
             if semen > 0:
                 parts.append(f"💦 {semen}ml")

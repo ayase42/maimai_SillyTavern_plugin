@@ -238,9 +238,11 @@ def extract_scene_content(response: str) -> str:
     text = response
 
     # 1. 尝试提取 <content>...</content> 中的内容
-    content_match = re.search(r'<content>(.*?)</content>', text, re.DOTALL)
-    if content_match:
-        text = content_match.group(1)
+    # 使用 findall 获取所有 content 块，然后合并（处理多个块的情况）
+    content_matches = re.findall(r'<content>(.*?)</content>', text, re.DOTALL)
+    if content_matches:
+        # 合并所有 content 块的内容
+        text = '\n\n'.join(content_matches)
     else:
         # 没有 content 标签，需要清理其他标签
         # 移除 JSON 代码块（通常在末尾）

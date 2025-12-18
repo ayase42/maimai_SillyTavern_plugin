@@ -31,7 +31,7 @@ class ContextBuilder:
         try:
             if context_type == "planner":
                 config_key = "scene.planner_context_messages"
-                default_limit = 1
+                default_limit = 3  # Planner需要更多上下文来判断场景连续性
             else:
                 config_key = "scene.reply_context_messages"
                 default_limit = 10
@@ -59,11 +59,17 @@ class ContextBuilder:
 
         for record in history:
             user_msg = record.get("user_message") or ""
-            bot_reply = record.get("bot_reply") or ""
+            # 优先使用干净的场景描述，避免格式化边框污染上下文
+            scene_desc = record.get("scene_description") or ""
+            location = record.get("location") or ""
+            clothing = record.get("clothing") or ""
 
             if user_msg:
                 lines.append(f"用户：{user_msg}")
-            if bot_reply:
-                lines.append(f"Bot：{bot_reply}")
+
+            # 构建干净的Bot回复（无边框噪音）
+            if scene_desc:
+                bot_context = f"[{location}][{clothing}] {scene_desc}" if location and clothing else scene_desc
+                lines.append(f"Bot：{bot_context}")
 
         return "\n".join(lines)

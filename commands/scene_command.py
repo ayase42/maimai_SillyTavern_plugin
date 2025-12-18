@@ -13,6 +13,7 @@ from src.common.logger import get_logger
 from ..core.scene_db import SceneDB
 from ..core.preset_manager import PresetManager
 from ..core.llm_client import LLMClientFactory
+from ..core.utils import parse_json_response
 
 logger = get_logger("scene_command")
 
@@ -277,22 +278,25 @@ class SceneCommand(BaseCommand):
                 logger.warning(f"[SceneCommand] 未找到全局日程")
                 return await self._send_command_reply("❌ 未找到当前日程，请先使用 /sc 日程 生成日程表", success=False)
 
-            # 构建并增强 prompt
+            # 获取当前会话的 NSFW 开关状态
+            nsfw_enabled = self.db.get_nsfw_enabled(session_id)
+
+            # 构建并增强 prompt（根据 NSFW 开关状态）
             prompt = self._build_init_prompt(activity, current_time)
             enhanced_prompt = self.preset_manager.build_full_preset_prompt(
                 base_prompt=prompt,
                 include_main=True,
-                include_guidelines=True,
+                include_guidelines=nsfw_enabled,  # 根据 NSFW 开关决定是否包含 NSFW 规则
                 include_style=True
             )
-            logger.info(f"初始化Prompt (with full preset):\n{enhanced_prompt}")
+            logger.info(f"初始化Prompt (with full preset, nsfw={nsfw_enabled}):\n{enhanced_prompt}")
 
             # 调用 LLM
             llm_response, _ = await self.llm.generate_response_async(enhanced_prompt)
             logger.info(f"LLM返回:\n{llm_response}")
 
-            # 解析 JSON
-            scene_data = self._parse_json_response(llm_response)
+            # 解析 JSON（使用带宽松回退的解析方法）
+            scene_data = parse_json_response(llm_response)
             if not scene_data:
                 return await self._send_command_reply("❌ 场景初始化失败，请稍后重试", success=False)
 
@@ -480,22 +484,25 @@ class SceneCommand(BaseCommand):
 
 注意：场景内容中使用 \\n\\n 表示段落换行（两个换行符）"""
 
-            # 应用完整预设（包括主提示、指南、禁词表、文风）
+            # 获取当前会话的 NSFW 开关状态
+            nsfw_enabled = self.db.get_nsfw_enabled(session_id)
+
+            # 应用完整预设（根据 NSFW 开关状态）
             enhanced_prompt = self.preset_manager.build_full_preset_prompt(
                 base_prompt=prompt,
                 include_main=True,
-                include_guidelines=True,
+                include_guidelines=nsfw_enabled,  # 根据 NSFW 开关决定是否包含 NSFW 规则
                 include_style=True
             )
-            logger.info(f"续接Prompt (with full preset):\n{enhanced_prompt}")
+            logger.info(f"续接Prompt (with full preset, nsfw={nsfw_enabled}):\n{enhanced_prompt}")
 
             # 调用LLM
             llm_response, _ = await self.llm.generate_response_async(enhanced_prompt)
 
             logger.info(f"LLM返回:\n{llm_response}")
 
-            # 解析JSON
-            scene_data = self._parse_json_response(llm_response)
+            # 解析JSON（使用带宽松回退的解析方法）
+            scene_data = parse_json_response(llm_response)
 
             if not scene_data:
                 # 解析失败，直接续接
@@ -586,28 +593,6 @@ class SceneCommand(BaseCommand):
             return "2-3句话"
         else:
             return "3-5句话，可能跨天"
-
-    def _parse_json_response(self, response: str) -> Optional[dict]:
-        """解析LLM返回的JSON"""
-        try:
-            # 提取```json包裹的内容
-            json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # 尝试直接解析
-                json_str = response
-
-            # 解析JSON
-            data = json.loads(json_str)
-            return data
-
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"解析响应时出错: {e}")
-            return None
 
     @classmethod
     def get_command_info(cls) -> CommandInfo:

@@ -142,11 +142,22 @@ class SceneGenerator:
                 logger.error(f"[Reply] 缺少地点或着装字段")
                 return None
 
-            # 使用提取的正文内容替代 JSON 中的简短"场景"字段
-            if scene_content and len(scene_content) > len(reply_data.get("场景", "")):
-                logger.info(f"[Reply] 使用提取的正文内容 (长度: {len(scene_content)}) 替代 JSON 场景字段")
-                reply_data["场景"] = scene_content
-            elif not reply_data.get("场景"):
+            # 智能选择场景内容：优先使用提取的正文，但需要进行质量检查
+            json_scene = reply_data.get("场景", "")
+            if scene_content:
+                # 检查提取内容的质量：至少50字且包含段落结构或对话
+                has_structure = '\n' in scene_content or '"' in scene_content or '「' in scene_content
+                is_substantial = len(scene_content) >= 50
+
+                if is_substantial and (has_structure or len(scene_content) > len(json_scene) * 1.5):
+                    logger.info(f"[Reply] 使用提取的正文内容 (长度: {len(scene_content)})")
+                    reply_data["场景"] = scene_content
+                elif json_scene:
+                    logger.info(f"[Reply] 提取内容质量不佳，使用JSON场景字段")
+                else:
+                    # JSON也没有，用提取的内容
+                    reply_data["场景"] = scene_content
+            elif not json_scene:
                 logger.error(f"[Reply] 场景内容为空")
                 return None
 
@@ -156,17 +167,25 @@ class SceneGenerator:
             final_location = self._normalize_scene_field(final_location)
             final_clothing = self._normalize_scene_field(final_clothing)
 
+            # 双模型模式下，优先信任Planner的决策
+            # 只有当Planner未做出变化决策，且Reply输出了不同内容时，才考虑采用Reply结果
             if reply_location and reply_location != final_location:
-                logger.info("[Reply] 模型输出地点与状态决策不一致，采用模型结果")
-                final_location = reply_location
-                state_decision["地点变化"] = True
-                state_decision["新地点"] = final_location
+                if not state_decision.get("地点变化"):
+                    # Planner没有标记地点变化，但Reply输出了不同地点，记录警告但保留Planner决策
+                    logger.warning(f"[Reply] 模型输出地点({reply_location})与Planner决策({final_location})不一致，保留Planner决策")
+                else:
+                    # Planner已标记变化，但新地点不同，采用Reply结果
+                    logger.info(f"[Reply] 采用模型输出的地点: {reply_location}")
+                    final_location = reply_location
+                    state_decision["新地点"] = final_location
 
             if reply_clothing and reply_clothing != final_clothing:
-                logger.info("[Reply] 模型输出着装与状态决策不一致，采用模型结果")
-                final_clothing = reply_clothing
-                state_decision["着装变化"] = True
-                state_decision["新着装"] = final_clothing
+                if not state_decision.get("着装变化"):
+                    logger.warning(f"[Reply] 模型输出着装({reply_clothing})与Planner决策({final_clothing})不一致，保留Planner决策")
+                else:
+                    logger.info(f"[Reply] 采用模型输出的着装: {reply_clothing}")
+                    final_clothing = reply_clothing
+                    state_decision["新着装"] = final_clothing
 
             reply_data["地点"] = final_location
             reply_data["着装"] = final_clothing
@@ -254,10 +273,21 @@ class SceneGenerator:
                 "场景": result.get("场景", "")
             }
 
-            # 使用提取的正文内容替代 JSON 中的简短"场景"字段
-            if scene_content and len(scene_content) > len(scene_reply["场景"]):
-                logger.info(f"[SingleModel] 使用提取的正文内容 (长度: {len(scene_content)}) 替代 JSON 场景字段")
-                scene_reply["场景"] = scene_content
+            # 智能选择场景内容：优先使用提取的正文，但需要进行质量检查
+            json_scene = scene_reply["场景"]
+            if scene_content:
+                # 检查提取内容的质量：至少50字且包含段落结构或对话
+                has_structure = '\n' in scene_content or '"' in scene_content or '「' in scene_content
+                is_substantial = len(scene_content) >= 50
+
+                if is_substantial and (has_structure or len(scene_content) > len(json_scene) * 1.5):
+                    logger.info(f"[SingleModel] 使用提取的正文内容 (长度: {len(scene_content)})")
+                    scene_reply["场景"] = scene_content
+                elif json_scene:
+                    logger.info(f"[SingleModel] 提取内容质量不佳，使用JSON场景字段")
+                else:
+                    # JSON也没有，用提取的内容
+                    scene_reply["场景"] = scene_content
 
             # 透传智能配图相关字段，单模型模式也能触发生图逻辑
             if "建议配图" in result:
